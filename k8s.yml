@@ -1,0 +1,172 @@
+---
+- name: Setup Kubernetes (Minikube) and Deploy App
+  hosts: localhost
+  become: yes
+
+  vars:
+    app_name: cw2-server
+    docker_image: imbah300/cw2-server:1.0
+    replicas: 3
+
+  tasks:
+
+    # -------------------------
+    # System Update
+    # -------------------------
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    # -------------------------
+    # Install dependencies
+    # -------------------------
+    - name: Install required packages
+      apt:
+        name:
+          - curl
+          - apt-transport-https
+          - ca-certificates
+          - gnupg
+          - software-properties-common
+        state: present
+
+    # -------------------------
+    # Fix containerd conflict
+    # -------------------------
+    - name: Remove old Docker and containerd
+      apt:
+        name:
+          - docker.io
+          - containerd
+          - containerd.io
+        state: absent
+        purge: yes
+      ignore_errors: yes
+
+    # -------------------------
+    # Install Docker (official)
+    # -------------------------
+    - name: Create keyrings directory
+      file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+
+    - name: Add Docker GPG key
+      shell: |
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+      args:
+        creates: /etc/apt/keyrings/docker.gpg
+
+    - name: Add Docker repository
+      shell: |
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" > /etc/apt/sources.list.d/docker.list
+
+    - name: Install Docker Engine
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+        state: present
+        update_cache: yes
+
+    - name: Start and enable Docker
+      service:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Add ubuntu user to docker group
+      user:
+        name: ubuntu
+        groups: docker
+        append: yes
+
+    # -------------------------
+    # Install kubectl
+    # -------------------------
+    - name: Download kubectl
+      get_url:
+        url: https://dl.k8s.io/release/v1.30.0/bin/linux/amd64/kubectl
+        dest: /usr/local/bin/kubectl
+        mode: '0755'
+
+    # -------------------------
+    # Install Minikube
+    # -------------------------
+    - name: Download Minikube
+      get_url:
+        url: https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
+        dest: /usr/local/bin/minikube
+        mode: '0755'
+
+    # -------------------------
+    # Start Minikube
+    # -------------------------
+    - name: Start Minikube
+      become_user: ubuntu
+      command: minikube start --driver=docker
+      environment:
+        CHANGE_MINIKUBE_NONE_USER: true
+
+    # -------------------------
+    # Create Deployment YAML
+    # -------------------------
+    - name: Create deployment file
+      copy:
+        dest: /home/ubuntu/deployment.yaml
+        content: |
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: {{ app_name }}
+          spec:
+            replicas: {{ replicas }}
+            strategy:
+              type: RollingUpdate
+              rollingUpdate:
+                maxUnavailable: 1
+                maxSurge: 1
+            selector:
+              matchLabels:
+                app: {{ app_name }}
+            template:
+              metadata:
+                labels:
+                  app: {{ app_name }}
+              spec:
+                containers:
+                - name: {{ app_name }}
+                  image: {{ docker_image }}
+                  ports:
+                  - containerPort: 8081
+
+    - name: Apply deployment
+      become_user: ubuntu
+      command: kubectl apply -f /home/ubuntu/deployment.yaml
+
+    # -------------------------
+    # Create Service YAML
+    # -------------------------
+    - name: Create service file
+      copy:
+        dest: /home/ubuntu/service.yaml
+        content: |
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: {{ app_name }}-service
+          spec:
+            type: NodePort
+            selector:
+              app: {{ app_name }}
+            ports:
+              - protocol: TCP
+                port: 8081
+                targetPort: 8081
+                nodePort: 30007
+
+    - name: Apply service
+      become_user: ubuntu
+      command: kubectl apply -f /home/ubuntu/service.yaml
