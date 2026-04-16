@@ -139,6 +139,7 @@
                 containers:
                 - name: {{ app_name }}
                   image: {{ docker_image }}
+                  imagePullPolicy: Always
                   ports:
                   - containerPort: 8081
 
@@ -170,3 +171,23 @@
     - name: Apply service
       become_user: ubuntu
       command: kubectl apply -f /home/ubuntu/service.yaml
+
+    # -------------------------
+    # Force re-pull latest image
+    # -------------------------
+    # Without this, Kubernetes sees no change in the manifest and keeps
+    # running the old pods — even if you pushed a new image to DockerHub.
+    - name: Annotate deployment with timestamp to force manifest change
+      become_user: ubuntu
+      command: >
+        kubectl annotate deployment {{ app_name }}
+        kubectl.kubernetes.io/restartedAt="{{ ansible_date_time.iso8601 }}"
+        --overwrite
+
+    - name: Rollout restart – force pods to pull latest image from DockerHub
+      become_user: ubuntu
+      command: kubectl rollout restart deployment/{{ app_name }}
+
+    - name: Wait for rollout to complete
+      become_user: ubuntu
+      command: kubectl rollout status deployment/{{ app_name }} --timeout=120s
